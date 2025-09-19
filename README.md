@@ -137,6 +137,16 @@ MatOfPoint2f contourPoints = ContourExtractor.extractContourFromRotatedRect(
 
 ## 示例结果
 
+### 检测效果展示
+
+![输电线示例](line2.jpg)
+![输电线检测示例](line2-detect.jpg)
+![输电线掩码提取示例](line2-mask.jpg)
+![输电线二值化示例](line2-binarization.jpg)
+![输电线轮廓提取示例](line2-outline.jpg)
+
+*上图展示了系统对输电线的检测和轮廓提取效果*
+
 系统能够：
 - 准确检测各种角度和光照条件下的输电线
 - 提取精确的轮廓掩码
