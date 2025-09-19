@@ -1,13 +1,29 @@
-import org.bytedeco.javacpp.*;
-import org.bytedeco.opencv.global.opencv_core;
-import org.bytedeco.opencv.global.opencv_imgproc;
-import org.bytedeco.opencv.global.opencv_imgcodecs;
-import org.bytedeco.opencv.opencv_core.*;
-import org.bytedeco.opencv.opencv_imgproc.*;
+package com.tencent.yolo11ncnn;
+
+import org.opencv.core.Mat;
+import org.opencv.core.MatOfPoint;
+import org.opencv.core.MatOfPoint2f;
+import org.opencv.core.Point;
+import org.opencv.core.Scalar;
+import org.opencv.core.Size;
+import org.opencv.imgproc.Imgproc;
+import org.opencv.core.Core;
 import java.util.ArrayList;
 import java.util.List;
+import android.graphics.Bitmap;
+import android.graphics.PointF;
+import org.opencv.android.OpenCVLoader;
 
 public class ContourExtractor {
+    
+    // 静态初始化块，确保OpenCV库已加载
+    static {
+        if (!OpenCVLoader.initDebug()) {
+            System.err.println("ContourExtractor: OpenCV库加载失败！");
+        } else {
+            System.out.println("ContourExtractor: OpenCV库加载成功");
+        }
+    }
     
     /**
      * 从旋转矩形区域提取轮廓点
@@ -21,85 +37,98 @@ public class ContourExtractor {
      * @param samplePoints 采样点数量，默认200
      * @return 轮廓点数组，形状为 (samplePoints, 2)
      */
-    public static Mat extractContourFromRotatedRect(Mat image, double x, double y, 
-                                                   double w, double h, double angle, 
-                                                   int samplePoints) {
+    public static MatOfPoint extractContourFromRotatedRect(Mat image, double x, double y, 
+                                                         double w, double h, double angle, 
+                                                         int samplePoints) {
         try {
+            System.out.println("开始轮廓提取 - 中心:(" + x + "," + y + ") 尺寸:(" + w + "x" + h + ") 角度:" + angle);
+            System.out.println("图像尺寸: " + image.size().width + "x" + image.size().height);
+            
             // 1. 计算旋转矩形的四个顶点
-            double cosAngle = Math.cos(angle);
-            double sinAngle = Math.sin(angle);
+            // 注意：YOLO OBB的角度通常是度数，需要转换为弧度
+            double angleRad = Math.toRadians(angle);
+            double cosAngle = Math.cos(angleRad);
+            double sinAngle = Math.sin(angleRad);
             
             // 计算半宽和半高
             double halfW = w / 2.0;
             double halfH = h / 2.0;
             
             // 计算四个顶点相对于中心的偏移
-            Mat corners = new Mat(4, 1, CV_32FC2);
-            corners.put(0, 0, -halfW, -halfH);
-            corners.put(1, 0, halfW, -halfH);
-            corners.put(2, 0, halfW, halfH);
-            corners.put(3, 0, -halfW, halfH);
+            MatOfPoint corners = new MatOfPoint();
+            Point[] cornerPoints = {
+                new Point(-halfW, -halfH),
+                new Point(halfW, -halfH),
+                new Point(halfW, halfH),
+                new Point(-halfW, halfH)
+            };
+            corners.fromArray(cornerPoints);
             
-            // 应用旋转变换
-            Mat rotationMatrix = new Mat(2, 2, CV_64F);
-            rotationMatrix.put(0, 0, cosAngle, -sinAngle);
-            rotationMatrix.put(1, 0, sinAngle, cosAngle);
-            
-            Mat rotatedCorners = new Mat();
-            opencv_core.transform(corners, rotatedCorners, rotationMatrix);
+            // 应用旋转变换（手动计算）
+            Point[] rotatedPoints = new Point[4];
+            for (int i = 0; i < 4; i++) {
+                double px = cornerPoints[i].x;
+                double py = cornerPoints[i].y;
+                double rotatedX = px * cosAngle - py * sinAngle;
+                double rotatedY = px * sinAngle + py * cosAngle;
+                rotatedPoints[i] = new Point(rotatedX, rotatedY);
+            }
+            MatOfPoint rotatedCorners = new MatOfPoint();
+            rotatedCorners.fromArray(rotatedPoints);
             
             // 平移到实际位置
-            Mat rectPoints = new Mat();
-            Point2f[] points = new Point2f[4];
-            rotatedCorners.get(0, 0, points);
-            Point2f[] translatedPoints = new Point2f[4];
+            Point[] rotatedArray = rotatedCorners.toArray();
+            Point[] translatedPoints = new Point[4];
             for (int i = 0; i < 4; i++) {
-                translatedPoints[i] = new Point2f(points[i].x() + (float)x, points[i].y() + (float)y);
+                translatedPoints[i] = new Point(rotatedArray[i].x + x, rotatedArray[i].y + y);
             }
-            rectPoints.put(0, 0, translatedPoints);
+            MatOfPoint rectPoints = new MatOfPoint();
+            rectPoints.fromArray(translatedPoints);
             
             // 2. 在旋转矩形区域内进行二值化处理
             // 创建与原图同尺寸的掩码
-            Mat binaryMask = Mat.zeros(image.size(), CV_8UC1).asMat();
+            Mat binaryMask = Mat.zeros(image.size(), 0); // 0 = CV_8UC1
             
             // 创建旋转矩形的掩码
-            Mat mask = Mat.zeros(image.size(), CV_8UC1).asMat();
-            MatVector maskContours = new MatVector(1);
-            maskContours.put(0, rectPoints);
-            opencv_imgproc.fillPoly(mask, maskContours, new Scalar(255, 255, 255, 0));
+            Mat mask = Mat.zeros(image.size(), 0); // 0 = CV_8UC1
+            List<MatOfPoint> maskContours = new ArrayList<>();
+            maskContours.add(new MatOfPoint(rectPoints.toArray()));
+            Imgproc.fillPoly(mask, maskContours, new Scalar(255, 255, 255, 0));
             
             // 在掩码区域内进行二值化处理
             Mat gray = new Mat();
             if (image.channels() == 3) {
-                opencv_imgproc.cvtColor(image, gray, opencv_imgproc.COLOR_BGR2GRAY);
+                Imgproc.cvtColor(image, gray, Imgproc.COLOR_BGR2GRAY);
             } else {
                 gray = image.clone();
             }
             
             // 使用OTSU二值化
             Mat binary = new Mat();
-            opencv_imgproc.threshold(gray, binary, 0, 255, opencv_imgproc.THRESH_BINARY + opencv_imgproc.THRESH_OTSU);
+            Imgproc.threshold(gray, binary, 0, 255, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU);
             
             // 反转二值化结果，使较暗的区域为白色
-            opencv_core.bitwise_not(binary, binary);
+            Core.bitwise_not(binary, binary);
             
             // 形态学操作，去除噪声
-            Mat kernel = opencv_imgproc.getStructuringElement(opencv_imgproc.MORPH_RECT, new Size(3, 3));
-            opencv_imgproc.morphologyEx(binary, binary, opencv_imgproc.MORPH_CLOSE, kernel);
-            opencv_imgproc.morphologyEx(binary, binary, opencv_imgproc.MORPH_OPEN, kernel);
+            Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+            Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_CLOSE, kernel);
+            Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, kernel);
             
             // 只在旋转矩形区域内保留二值化结果
             binary.copyTo(binaryMask, mask);
             
             // 3. 对二值化掩码进行形态学操作，确保连通性
-            Mat largeKernel = opencv_imgproc.getStructuringElement(opencv_imgproc.MORPH_RECT, new Size(15, 15));
-            opencv_imgproc.morphologyEx(binaryMask, binaryMask, opencv_imgproc.MORPH_CLOSE, largeKernel);
+            Mat largeKernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(15, 15));
+            Imgproc.morphologyEx(binaryMask, binaryMask, Imgproc.MORPH_CLOSE, largeKernel);
             
             // 4. 从二值化掩码中提取轮廓点
             // 查找轮廓
-            MatVector contours = new MatVector();
+            List<MatOfPoint> contours = new ArrayList<>();
             Mat hierarchy = new Mat();
-            opencv_imgproc.findContours(binaryMask, contours, hierarchy, opencv_imgproc.RETR_EXTERNAL, opencv_imgproc.CHAIN_APPROX_SIMPLE);
+            Imgproc.findContours(binaryMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+            
+            System.out.println("找到轮廓数量: " + contours.size());
             
             if (contours.size() == 0) {
                 System.out.println("简化函数: 没有找到轮廓");
@@ -107,35 +136,43 @@ public class ContourExtractor {
             }
             
             // 找到最大的轮廓
-            Mat largestContour = contours.get(0);
-            double maxArea = opencv_imgproc.contourArea(largestContour);
+            MatOfPoint largestContour = contours.get(0);
+            double maxArea = Imgproc.contourArea(largestContour);
+            System.out.println("轮廓0面积: " + maxArea);
+            
             for (int i = 0; i < contours.size(); i++) {
-                Mat contour = contours.get(i);
-                double area = opencv_imgproc.contourArea(contour);
+                MatOfPoint contour = contours.get(i);
+                double area = Imgproc.contourArea(contour);
+                System.out.println("轮廓" + i + "面积: " + area);
                 if (area > maxArea) {
                     maxArea = area;
                     largestContour = contour;
                 }
             }
             
+            System.out.println("最大轮廓面积: " + maxArea);
+            
             // 5. 均匀采样轮廓点
             // 将轮廓点展平
-            Point2f[] contourPoints = new Point2f[largestContour.rows()];
-            largestContour.get(0, 0, contourPoints);
+            Point[] contourPoints = largestContour.toArray();
+            System.out.println("原始轮廓点数量: " + contourPoints.length);
             
             // 如果轮廓点数量已经小于等于采样数量，直接返回
             if (contourPoints.length <= samplePoints) {
-                Mat result = new Mat(contourPoints.length, 1, CV_32FC2);
+                System.out.println("轮廓点数量小于采样数量，直接返回");
+                MatOfPoint result = new MatOfPoint();
+                Point[] resultPoints = new Point[contourPoints.length];
                 for (int i = 0; i < contourPoints.length; i++) {
-                    result.put(i, 0, contourPoints[i].x(), contourPoints[i].y());
+                    resultPoints[i] = new Point(contourPoints[i].x, contourPoints[i].y);
                 }
+                result.fromArray(resultPoints);
                 return result;
             } else {
                 // 计算轮廓的累积弧长
                 double[] distances = new double[contourPoints.length];
                 for (int i = 0; i < contourPoints.length - 1; i++) {
-                    double dx = contourPoints[i + 1].x() - contourPoints[i].x();
-                    double dy = contourPoints[i + 1].y() - contourPoints[i].y();
+                    double dx = contourPoints[i + 1].x - contourPoints[i].x;
+                    double dy = contourPoints[i + 1].y - contourPoints[i].y;
                     distances[i] = Math.sqrt(dx * dx + dy * dy);
                 }
                 
@@ -151,20 +188,18 @@ public class ContourExtractor {
                 // 如果总弧长为0（所有点重合），返回等间隔采样
                 if (totalLength == 0) {
                     double step = (double) contourPoints.length / samplePoints;
-                    List<Point2f> sampledPoints = new ArrayList<>();
+                    List<Point> sampledPoints = new ArrayList<>();
                     for (int i = 0; i < samplePoints; i++) {
                         int index = (int) (i * step);
                         if (index >= contourPoints.length) index = contourPoints.length - 1;
-                        sampledPoints.add(contourPoints[index]);
+                        sampledPoints.add(new Point(contourPoints[index].x, contourPoints[index].y));
                     }
-                    Mat result = new Mat(sampledPoints.size(), 1, CV_32FC2);
-                    for (int i = 0; i < sampledPoints.size(); i++) {
-                        result.put(i, 0, sampledPoints.get(i).x(), sampledPoints.get(i).y());
-                    }
+                    MatOfPoint result = new MatOfPoint();
+                    result.fromArray(sampledPoints.toArray(new Point[0]));
                     return result;
                 } else {
                     // 均匀采样：在弧长上均匀分布
-                    List<Point2f> sampledPoints = new ArrayList<>();
+                    List<Point> sampledPoints = new ArrayList<>();
                     for (int i = 0; i < samplePoints; i++) {
                         double dist = (double) i / samplePoints * totalLength;
                         
@@ -182,24 +217,25 @@ public class ContourExtractor {
                         if (idx < contourPoints.length - 1) {
                             double t = (dist - cumulativeDistances[idx]) / 
                                       (cumulativeDistances[idx + 1] - cumulativeDistances[idx]);
-                            double x_interp = (1 - t) * contourPoints[idx].x() + t * contourPoints[idx + 1].x();
-                            double y_interp = (1 - t) * contourPoints[idx].y() + t * contourPoints[idx + 1].y();
-                            sampledPoints.add(new Point2f((float)x_interp, (float)y_interp));
+                            double x_interp = (1 - t) * contourPoints[idx].x + t * contourPoints[idx + 1].x;
+                            double y_interp = (1 - t) * contourPoints[idx].y + t * contourPoints[idx + 1].y;
+                            sampledPoints.add(new Point(x_interp, y_interp));
                         } else {
-                            sampledPoints.add(contourPoints[contourPoints.length - 1]);
+                            sampledPoints.add(new Point(contourPoints[contourPoints.length - 1].x, 
+                                                      contourPoints[contourPoints.length - 1].y));
                         }
                     }
                     
-                    Mat result = new Mat(sampledPoints.size(), 1, CV_32FC2);
-                    for (int i = 0; i < sampledPoints.size(); i++) {
-                        result.put(i, 0, sampledPoints.get(i).x(), sampledPoints.get(i).y());
-                    }
+                    MatOfPoint result = new MatOfPoint();
+                    result.fromArray(sampledPoints.toArray(new Point[0]));
+                    System.out.println("采样完成，返回点数: " + sampledPoints.size());
                     return result;
                 }
             }
             
         } catch (Exception e) {
             System.out.println("提取轮廓点失败: " + e.getMessage());
+            e.printStackTrace();
             return null;
         }
     }
@@ -207,55 +243,111 @@ public class ContourExtractor {
     /**
      * 重载方法，使用默认采样点数量200
      */
-    public static Mat extractContourFromRotatedRect(Mat image, double x, double y, 
-                                                   double w, double h, double angle) {
+    public static MatOfPoint extractContourFromRotatedRect(Mat image, double x, double y, 
+                                                         double w, double h, double angle) {
         return extractContourFromRotatedRect(image, x, y, w, h, angle, 200);
     }
     
     /**
-     * 使用示例
+     * 从Android Bitmap中提取轮廓点（专门用于line类型检测结果）
+     * 
+     * @param bitmap Android Bitmap图像
+     * @param centerX 旋转矩形中心点x坐标
+     * @param centerY 旋转矩形中心点y坐标
+     * @param width 旋转矩形宽度
+     * @param height 旋转矩形高度
+     * @param angle 旋转角度（弧度）
+     * @param samplePoints 采样点数量，默认100
+     * @return 轮廓点列表
      */
-    public static void main(String[] args) {
-        // 加载图像
-        Mat image = opencv_imgcodecs.imread("your_image.jpg");
-        if (image.empty()) {
-            System.out.println("无法加载图像");
-            return;
+    public static List<PointF> extractContourFromBitmap(Bitmap bitmap, double centerX, double centerY, 
+                                                       double width, double height, double angle, 
+                                                       int samplePoints) {
+        try {
+            // 将Android Bitmap转换为OpenCV Mat
+            Mat image = bitmapToMat(bitmap);
+            if (image == null || image.empty()) {
+                System.out.println("Bitmap转Mat失败，返回空");
+                return null;
+            }
+            
+            // 使用现有的轮廓提取方法
+            MatOfPoint contourMat = extractContourFromRotatedRect(image, centerX, centerY, width, height, angle, samplePoints);
+            
+            if (contourMat == null || contourMat.empty()) {
+                System.out.println("轮廓提取失败，返回空");
+                return null;
+            }
+            
+            // 将Mat转换为PointF列表
+            List<PointF> contourPoints = new ArrayList<>();
+            Point[] points = contourMat.toArray();
+            
+            for (Point point : points) {
+                contourPoints.add(new PointF((float)point.x, (float)point.y));
+            }
+            
+            return contourPoints;
+            
+        } catch (Exception e) {
+            System.out.println("从Bitmap提取轮廓点失败: " + e.getMessage());
+            return null;
         }
-        
-        // 示例参数
-        double x = 328.6, y = 213.9, w = 469.6, h = 20.8, angle = 3.116;
-        
-        // 提取轮廓点
-        Mat contourPoints = extractContourFromRotatedRect(image, x, y, w, h, angle, 200);
-        
-        if (contourPoints != null) {
-            System.out.println("成功提取 " + contourPoints.rows() + " 个轮廓点");
+    }
+    
+    /**
+     * 重载方法，使用默认采样点数量100
+     */
+    public static List<PointF> extractContourFromBitmap(Bitmap bitmap, double centerX, double centerY, 
+                                                       double width, double height, double angle) {
+        return extractContourFromBitmap(bitmap, centerX, centerY, width, height, angle, 200);
+    }
+    
+    /**
+     * 将Android Bitmap转换为OpenCV Mat
+     */
+    private static Mat bitmapToMat(Bitmap bitmap) {
+        try {
+            int width = bitmap.getWidth();
+            int height = bitmap.getHeight();
             
-            // 可视化结果
-            Mat resultImage = image.clone();
-            Point2f[] points = new Point2f[contourPoints.rows()];
-            contourPoints.get(0, 0, points);
+            System.out.println("Bitmap转Mat - 尺寸: " + width + "x" + height);
             
-            // 绘制轮廓点
-            for (Point2f point : points) {
-                opencv_imgproc.circle(resultImage, new Point((int)point.x(), (int)point.y()), 2, new Scalar(0, 255, 0, 0), -1);
+            // 创建Mat - 使用正确的类型常量
+            Mat mat = new Mat(height, width, 16); // 16 = CV_8UC3 (3通道8位无符号整数)
+            
+            // 获取像素数据
+            int[] pixels = new int[width * height];
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+            
+            // 转换ARGB到BGR
+            byte[] data = new byte[width * height * 3];
+            for (int i = 0; i < pixels.length; i++) {
+                int pixel = pixels[i];
+                int a = (pixel >> 24) & 0xFF; // Alpha通道
+                int r = (pixel >> 16) & 0xFF;
+                int g = (pixel >> 8) & 0xFF;
+                int b = pixel & 0xFF;
+                
+                // 如果Alpha通道为0，设置为白色背景
+                if (a == 0) {
+                    r = g = b = 255;
+                }
+                
+                data[i * 3] = (byte) b;     // B
+                data[i * 3 + 1] = (byte) g; // G
+                data[i * 3 + 2] = (byte) r; // R
             }
             
-            // 连接轮廓点
-            for (int i = 0; i < points.length; i++) {
-                Point2f startPoint = points[i];
-                Point2f endPoint = points[(i + 1) % points.length];
-                opencv_imgproc.line(resultImage, new Point((int)startPoint.x(), (int)startPoint.y()), 
-                                   new Point((int)endPoint.x(), (int)endPoint.y()), new Scalar(0, 255, 0, 0), 1);
-            }
+            // 将数据复制到Mat
+            mat.put(0, 0, data);
             
-            // 保存结果
-            opencv_imgcodecs.imwrite("contour_result.jpg", resultImage);
-            System.out.println("结果已保存为 contour_result.jpg");
-            
-        } else {
-            System.out.println("轮廓点提取失败");
+            System.out.println("Bitmap转Mat成功");
+            return mat;
+        } catch (Exception e) {
+            System.out.println("Bitmap转Mat失败: " + e.getMessage());
+            e.printStackTrace();
+            return null;
         }
     }
 }
